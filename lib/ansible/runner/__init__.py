@@ -32,6 +32,8 @@ import shlex
 import pipes
 import jinja2
 import subprocess
+import tokenize
+import StringIO
 
 import ansible.constants as C
 import ansible.inventory
@@ -283,6 +285,48 @@ class Runner(object):
         return result
 
     # *****************************************************
+    def _python_interactive_indent(self, code):
+        prev_toktype = tokenize.INDENT
+        first_line = None
+        last_lineno = -1
+        last_col = 0
+
+        output = ''
+
+        tokgen = tokenize.generate_tokens(StringIO.StringIO(code).readline)
+        indent = 0
+        hasNL = False
+        prefixed = False
+        for toktype, ttext, (slineno, scol), (elineno, ecol), ltext in tokgen:
+            done = False
+            if toktype == tokenize.INDENT:
+                indent = indent + 1
+            if toktype == tokenize.DEDENT:
+                indent = indent - 1
+            if slineno > last_lineno:
+                last_col = 0
+            if not done and toktype == tokenize.NL:
+                hasNL = True
+                done = True
+            if not done and toktype == tokenize.COMMENT:
+                done = True
+            if not done and toktype == tokenize.STRING and prev_toktype == tokenize.INDENT:
+                done = True
+            if not done and hasNL and toktype != tokenize.DEDENT and toktype != tokenize.INDENT:
+                hasNL = False
+                output = output + ("    " * indent) + '\n'
+                output += "    " * indent
+                prefixed = True
+            if not done:
+                if not prefixed and scol > last_col:
+                    output += (" " * (scol - last_col))
+                output += (ttext)
+            prefixed = False
+            prev_toktype = toktype
+            last_col = ecol
+            last_lineno = elineno
+        return output
+
 
     def _execute_module(self, conn, tmp, module_name, args,
         async_jid=None, async_module=None, async_limit=None, inject=None, persist_files=False, complex_args=None):
@@ -300,6 +344,12 @@ class Runner(object):
         shebang,
         module_data
         ) = self._configure_module(conn, module_name, args, inject, complex_args)
+        
+        # we need to transform the python code into python-interactive code
+        # imagine you copy/paste the code into a python interactive shell
+        # lot's of indentation problems appear so we have to fix the code
+        module_data = self._python_interactive_indent(module_data)
+        module_data = "__file__=''\n" + module_data # __file__ is not defined in python interactive mode
 
         # a remote tmp path may be necessary and not already created
         if self._late_needs_tmp_path(conn, tmp, module_style):

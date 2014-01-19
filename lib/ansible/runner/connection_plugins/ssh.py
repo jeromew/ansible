@@ -149,12 +149,7 @@ class Connection(object):
         ''' run a command on the remote host '''
 
         ssh_cmd = self._password_cmd()
-        ssh_cmd += ["ssh", "-C"]
-        if not in_data:
-            # we can only use tty when we are not pipelining the modules. piping data into /usr/bin/python
-            # inside a tty automatically invokes the python interactive-mode but the modules are not
-            # compatible with the interactive-mode ("unexpected indent" mainly because of empty lines)
-            ssh_cmd += ["-tt"]
+        ssh_cmd += ["ssh", "-C", "-tt"]
         if utils.VERBOSITY > 3:
             ssh_cmd += ["-vvv"]
         else:
@@ -185,24 +180,18 @@ class Connection(object):
             fcntl.lockf(self.runner.output_lockfile, fcntl.LOCK_EX)
         
         # create process
-        if in_data:
-            # do not use pseudo-pty
+        # try to use upseudo-pty
+        try:
+            # Make sure stdin is a proper (pseudo) pty to avoid: tcgetattr errors
+            master, slave = pty.openpty()
+            p = subprocess.Popen(ssh_cmd, stdin=slave,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdin = os.fdopen(master, 'w', 0)
+            os.close(slave)
+        except:
             p = subprocess.Popen(ssh_cmd, stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdin = p.stdin
-        else:
-            # try to use upseudo-pty
-            try:
-                # Make sure stdin is a proper (pseudo) pty to avoid: tcgetattr errors
-                master, slave = pty.openpty()
-                p = subprocess.Popen(ssh_cmd, stdin=slave,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdin = os.fdopen(master, 'w', 0)
-                os.close(slave)
-            except:
-                p = subprocess.Popen(ssh_cmd, stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdin = p.stdin
 
         self._send_password()
 
@@ -253,12 +242,10 @@ class Connection(object):
         stdout = ''
         stderr = ''
         rpipes = [p.stdout, p.stderr]
+        written = False
+        lines = []
         if in_data:
-            try:
-                stdin.write(in_data)
-                stdin.close()
-            except:
-                raise errors.AnsibleError('SSH Error: data could not be sent to the remote host. Make sure this host can be reached over ssh')
+           lines = in_data.splitlines(True)
         while True:
             rfd, wfd, efd = select.select(rpipes, [], rpipes, 1)
 
@@ -268,6 +255,15 @@ class Connection(object):
                     "sudo", "Sorry, try again.")
                 if stdout.endswith("%s\r\n%s" % (incorrect_password, prompt)):
                     raise errors.AnsibleError('Incorrect sudo password') 
+
+            if not written and success_key in stdout:
+                written = True
+            if written:
+               if len(lines):
+                   line = lines.pop(0)
+                   stdin.write(line)
+               else:
+                   stdin.write('\n')
 
             if p.stdout in rfd:
                 dat = os.read(p.stdout.fileno(), 9000)
@@ -287,7 +283,14 @@ class Connection(object):
             elif not rpipes and p.poll() == None:
                 p.wait()
         stdin.close() # close stdin after we read from stdout (see also issue #848)
-        
+
+        # since execution is done in interactive mode, the output if full of
+        # >>>, ... an other lines. Filter out the only line with '{'
+        lines = stdout.split('\n');
+        stdout = '';
+        for line in lines:
+            if line[0:1]=='{':
+                stdout += line
         if C.HOST_KEY_CHECKING and not_in_host_file:
             # lock around the initial SSH connectivity so the user prompt about whether to add 
             # the host to known hosts is not intermingled with multiprocess output.
@@ -303,7 +306,6 @@ class Connection(object):
             raise errors.AnsibleError('using -c ssh on certain older ssh versions may not support ControlPersist, set ANSIBLE_SSH_ARGS="" (or ansible_ssh_args in the config file) before running again')
         if p.returncode == 255 and in_data:
             raise errors.AnsibleError('SSH Error: data could not be sent to the remote host. Make sure this host can be reached over ssh')
-
         return (p.returncode, '', stdout, stderr)
 
     def put_file(self, in_path, out_path):

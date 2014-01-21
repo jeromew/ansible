@@ -242,7 +242,7 @@ class Connection(object):
         stdout = ''
         stderr = ''
         rpipes = [p.stdout, p.stderr]
-        written = False
+        pyprompt = False
         lines = []
         if in_data:
            lines = in_data.splitlines(True)
@@ -256,20 +256,21 @@ class Connection(object):
                 if stdout.endswith("%s\r\n%s" % (incorrect_password, prompt)):
                     raise errors.AnsibleError('Incorrect sudo password') 
 
-            if not written and success_key in stdout:
-                written = True
-            if written:
-               if len(lines):
-                   line = lines.pop(0)
-                   stdin.write(line)
-               else:
-                   stdin.write('\n')
-
             if p.stdout in rfd:
                 dat = os.read(p.stdout.fileno(), 9000)
+                if dat.endswith(">>> "):
+                    pyprompt = True
                 stdout += dat
                 if dat == '':
                     rpipes.remove(p.stdout)
+
+
+            if pyprompt:
+                pyprompt = False
+                if len(lines):
+                    stdin.write(lines.pop(0))
+
+
             if p.stderr in rfd:
                 dat = os.read(p.stderr.fileno(), 9000)
                 stderr += dat

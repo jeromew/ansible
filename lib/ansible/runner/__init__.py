@@ -348,9 +348,10 @@ class Runner(object):
         # we need to transform the python code into python-interactive code
         # imagine you copy/paste the code into a python interactive shell
         # lot's of indentation problems appear so we have to fix the code
-        module_data = self._python_interactive_indent(module_data)
-        module_data = "__file__=''\n" + module_data # __file__ is not defined in python interactive mode
+        #module_data = self._python_interactive_indent(module_data)
+        #module_data = "__file__=''\n" + module_data # __file__ is not defined in python interactive mode
 
+        
         # a remote tmp path may be necessary and not already created
         if self._late_needs_tmp_path(conn, tmp, module_style):
             tmp = self._make_tmp_path(conn)
@@ -405,7 +406,12 @@ class Runner(object):
         else:
             if async_jid is None:
                 if conn.has_pipelining and C.ANSIBLE_SSH_PIPELINING and not C.DEFAULT_KEEP_REMOTE_FILES:
-                    in_data = module_data
+                    m = module_data.encode('base64').replace('\n','')
+                    in_data = "__file__ = 'interactive'\n"
+                    in_data += """m=''\n"""
+                    for i in range(0, len(m), 60):
+                        in_data += ("""m += \"\"\"%s\"\"\"\n""" %  m[i:i+60])
+                    in_data = in_data + """exec(m.decode('base64'))\n"""
                 else:
                     cmd = "%s" % (remote_module_path)
             else:
